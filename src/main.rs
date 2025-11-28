@@ -1,4 +1,5 @@
 use std::{
+    env,
     io::{BufReader, prelude::*},
     net::{TcpListener, TcpStream}, thread, time::Duration,
 };
@@ -6,6 +7,23 @@ use std::{
 use::basic_auth::ThreadPool;
 
 fn main() {
+
+    /// db stuff
+    
+    let admin_user = env::var("ADMIN_USER").unwrap();
+    let admin_password = env::var("ADMIN_PASSWORD").unwrap();
+    
+    let connection = sqlite::open(":memory:").unwrap();
+
+    let query = format!("
+        CREATE TABLE IF NOT EXISTS users (userid TEXT PRIMARY KEY, password TEXT);
+        INSERT INTO users(userid) VALUES('{admin_user}')
+            ON CONFLICT(userid) DO UPDATE SET password='{admin_password}';
+        ");
+
+    connection.execute(query).unwrap();
+
+
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let pool = ThreadPool::new(4);
 
