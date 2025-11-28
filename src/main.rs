@@ -1,15 +1,20 @@
 use std::{
     io::{BufReader, prelude::*},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream}, thread, time::Duration,
 };
+
+use::basic_auth::ThreadPool;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+    let pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
 
-        handle_connection(stream);
+         pool.execute(|| {
+            handle_connection(stream);
+        });
     }
 }
 
@@ -57,6 +62,10 @@ fn handle_connection(mut stream: TcpStream) {
     let response = match request_method {
         "GET" => match request_path {
             "/" => empty_response(OK),
+            "/sleep" => {
+                thread::sleep(Duration::from_secs(5));
+                empty_response(OK)
+            }
             _ => empty_response(NOT_IMPLEMENTED)
         },
         _ => empty_response(NOT_IMPLEMENTED)
