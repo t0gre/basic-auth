@@ -13,8 +13,21 @@ fn main() {
     }
 }
 
-const NOT_IMPLEMENTED: &str = "HTTP/1.1 501 Not Implemented\r\n\r\n";
-const OK: &str = "HTTP/1.1 200 OK\r\n\r\n";
+const NOT_IMPLEMENTED: &str = "HTTP/1.1 501 Not Implemented";
+const OK: &str = "HTTP/1.1 200 OK";
+
+fn empty_response(status_line: &str) -> String {
+    return format!(
+            "{status_line}\r\nContent-Length: 0\r\n\r\n"
+        );
+}
+
+fn body_response(status_line: &str, contents: &str) -> String {
+    let length = contents.len();
+    return format!(
+            "{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}"
+        );
+    }
 
 fn handle_connection(mut stream: TcpStream) {
     let buf_reader = BufReader::new(&stream);
@@ -35,22 +48,18 @@ fn handle_connection(mut stream: TcpStream) {
     let request_path = first_line_parts[1];
     let request_http_version = first_line_parts[2];
 
-    println!("Request method: {request_method}");
-    println!("Request path: {request_path}");
-    println!("Request method: {request_http_version}");
-
     if request_http_version != "HTTP/1.1" {
-        let response = NOT_IMPLEMENTED;
+        let response = empty_response(NOT_IMPLEMENTED);
         stream.write_all(response.as_bytes()).unwrap();
         return;
     } 
 
     let response = match request_method {
         "GET" => match request_path {
-            "/" => OK,
-            _ => NOT_IMPLEMENTED
+            "/" => empty_response(OK),
+            _ => empty_response(NOT_IMPLEMENTED)
         },
-        _ => NOT_IMPLEMENTED
+        _ => empty_response(NOT_IMPLEMENTED)
     };
 
     stream.write_all(response.as_bytes()).unwrap();
