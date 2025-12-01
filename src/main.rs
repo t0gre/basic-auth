@@ -7,6 +7,7 @@ use std::{
 use::basic_auth::ThreadPool;
 use sqlite::Connection;
 
+
 fn main() {
 
     
@@ -56,17 +57,28 @@ fn list_users(db_connection: &Connection) -> String {
 
     let query = "SELECT userid, password FROM users";
 
+    let mut users: Vec<String> = Vec::new();
 
     db_connection
-    .iterate(query, |pairs| {
-        for &(name, value) in pairs.iter() {
-            println!("{} = {}", name, value.unwrap());
-            
-        }
+    .iterate(query, |row| {
+
+
+        let row_string = row.iter()
+                .map(|&(column, val)| {
+                    let value = val.unwrap();
+                    return format!("{column}: {value}", )
+                
+                })
+                .reduce(|rowa, rowb| format!("{rowa}, {rowb}"));
+
+        users.push(row_string.unwrap());
+
         true
     })
     .unwrap();
-    return body_response(OK, "contents")
+
+    println!("{:?}", users);
+    return body_response(OK, serde_json::to_string(&users).unwrap().as_str())
 }
 
 fn handle_connection(mut stream: TcpStream, db_connection: &Connection) {
