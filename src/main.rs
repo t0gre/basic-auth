@@ -4,6 +4,8 @@ use std::{
     net::{TcpListener, TcpStream}, thread, time::Duration,
 };
 
+use base64::prelude::*;
+
 use argon2::{
     password_hash::{
         rand_core::OsRng,
@@ -70,10 +72,9 @@ fn check_password(user: User, connection: &Connection) -> bool {
     Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok()
 }
 
-fn handle_login(body: &String, connection: &Connection) -> String {
+fn handle_login(credentials: &str, connection: &Connection) -> String {
   
-  let body_content = body.replace("\n", "");
-  let parts = body_content.split(",").collect::<Vec<&str>>();
+  let parts = credentials.split(":").collect::<Vec<&str>>();
 
   let userid = parts[0].to_string();
   let password = parts[1].to_string();
@@ -88,15 +89,11 @@ fn handle_login(body: &String, connection: &Connection) -> String {
 
 }
 
+
 fn main() {
 
-    
-    
-
     let admin_user = env::var("ADMIN_USER").unwrap();
-    let admin_password = env::var("ADMIN_PASSWORD").unwrap();
-
-    
+    let admin_password = env::var("ADMIN_PASSWORD").unwrap();    
 
     let admin_user = User {
         userid: admin_user,
@@ -182,6 +179,35 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
     
     println!("Request: {http_request:#?}");
 
+    // get check basic auth
+    let mut auth_credentials = String::new();
+    let auth_header = http_request
+                                .iter()
+                                .find(|line| line.starts_with("Authorization"));
+
+    if auth_header.is_none() {
+        // pass
+    } else {
+
+        let auth = auth_header.unwrap().split(":").collect::<Vec<&str>>()[1];
+        let auth_parts = auth.split_whitespace().collect::<Vec<&str>>();
+        let auth_scheme = auth_parts[0];
+
+
+        if auth_scheme == "Basic" {
+            auth_credentials = String::from_utf8(BASE64_STANDARD.decode(auth_parts[1].to_string()).unwrap()).unwrap() ;
+        }
+
+
+        
+    }
+
+    if auth_credentials == String::new() {
+        let response = empty_response(UNAUTHORIZED);
+        stream.write_all(response.as_bytes()).unwrap();
+        return;
+    }
+
     let request_first_line = &http_request[0];
   
     
@@ -209,6 +235,7 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
         "GET" => match request_path {
             "/" => empty_response(OK),
             "/list" => list_users(connection),
+            "/login" => handle_login(auth_credentials.as_str(), connection),
             "/sleep" => {
                 thread::sleep(Duration::from_secs(5));
                 empty_response(OK)
@@ -216,7 +243,7 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
             _ => empty_response(NOT_IMPLEMENTED)
         },
         "POST" => match request_path {
-            "/login" => handle_login(&request_body, connection),
+            "/dump" => handle_login(auth_credentials.as_str(), connection),
             _ => empty_response(NOT_IMPLEMENTED)
         }
         _ => empty_response(NOT_IMPLEMENTED)
