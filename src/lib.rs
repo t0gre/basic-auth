@@ -1,11 +1,13 @@
 use std::{sync::{Arc, Mutex, mpsc}, thread};
 
+use sqlite::Connection;
+
 pub struct ThreadPool {
     workers: Vec<Worker>,
     sender: Option<mpsc::Sender<Job>>,
 }
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
+type Job = Box<dyn FnOnce(&Connection) + Send + 'static>;
 
 impl ThreadPool {
     pub fn new(size: usize) -> ThreadPool {
@@ -21,11 +23,11 @@ impl ThreadPool {
             workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
 
-         ThreadPool { workers, sender: Some((sender)) }
+         ThreadPool { workers, sender: Some(sender) }
     }
     pub fn execute<F>(&self, f: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&Connection) + Send + 'static,
     {
         let job = Box::new(f);
 
@@ -55,7 +57,10 @@ struct Worker {
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+        
         let thread = thread::spawn(move || {
+            let connection = sqlite::open("auth.db").unwrap();
+            let connection_ref = &connection;
             loop {
                 let message = receiver.lock().unwrap().recv();
 
@@ -63,7 +68,7 @@ impl Worker {
                     Ok(job) => {
                         println!("Worker {id} got a job; executing.");
 
-                        job();
+                        job(connection_ref);
                     }
                     Err(_) => {
                         println!("Worker {id} disconnected; shutting down.");
@@ -73,6 +78,7 @@ impl Worker {
             }
         });
 
+        
         Worker { id, thread }
     }
 }

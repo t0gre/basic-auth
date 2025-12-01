@@ -5,15 +5,15 @@ use std::{
 };
 
 use::basic_auth::ThreadPool;
+use sqlite::Connection;
 
 fn main() {
 
-    /// db stuff
     
     let admin_user = env::var("ADMIN_USER").unwrap();
     let admin_password = env::var("ADMIN_PASSWORD").unwrap();
     
-    let connection = sqlite::open(":memory:").unwrap();
+    let connection = sqlite::open("auth.db").unwrap();
 
     let query = format!("
         CREATE TABLE IF NOT EXISTS users (userid TEXT PRIMARY KEY, password TEXT);
@@ -30,8 +30,8 @@ fn main() {
     for stream in listener.incoming() {
         let stream = stream.unwrap();
 
-         pool.execute(|| {
-            handle_connection(stream);
+         pool.execute(|db_connection: &Connection| {
+            handle_connection(stream, db_connection);
         });
     }
 }
@@ -52,7 +52,24 @@ fn body_response(status_line: &str, contents: &str) -> String {
         );
     }
 
-fn handle_connection(mut stream: TcpStream) {
+fn list_users(db_connection: &Connection) -> String {
+
+    let query = "SELECT userid, password FROM users";
+
+
+    db_connection
+    .iterate(query, |pairs| {
+        for &(name, value) in pairs.iter() {
+            println!("{} = {}", name, value.unwrap());
+            
+        }
+        true
+    })
+    .unwrap();
+    return body_response(OK, "contents")
+}
+
+fn handle_connection(mut stream: TcpStream, db_connection: &Connection) {
     let buf_reader = BufReader::new(&stream);
     let http_request: Vec<_> = buf_reader
         .lines()
@@ -80,6 +97,7 @@ fn handle_connection(mut stream: TcpStream) {
     let response = match request_method {
         "GET" => match request_path {
             "/" => empty_response(OK),
+            "/list" => list_users(db_connection),
             "/sleep" => {
                 thread::sleep(Duration::from_secs(5));
                 empty_response(OK)
