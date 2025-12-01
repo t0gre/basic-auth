@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+argon2 = { version = "0.5.3", features = ["std"] }
 serde_json = "1.0.145"
 sqlite = "0.37.0"
