@@ -72,21 +72,48 @@ fn check_password(user: User, connection: &Connection) -> bool {
     Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok()
 }
 
-fn handle_login(credentials: &str, connection: &Connection) -> String {
+fn is_admin(user: User, connection: &Connection) -> bool {
+
+    let userid = user.userid;
+
+    let query = format!("
+        SELECT role FROM users WHERE userid='{userid}'"
+    );
+
+    let mut is_admin = false;
+
+    connection.iterate(query, |row| {
+        for &(column, val) in row.iter() {
+            if column == "role" && val.unwrap().to_string() == "admin" {
+                    is_admin = true;
+            }
+        }
+        true
+    }
+    ).unwrap();
+
+    return is_admin;
+}
+
+fn check_credentials(credentials: &str, connection: &Connection) -> bool {
   
   let parts = credentials.split(":").collect::<Vec<&str>>();
 
   let userid = parts[0].to_string();
   let password = parts[1].to_string();
 
-  let ok = check_password(User { userid, password}, connection);
+  return check_password(User { userid, password}, connection);
 
-  if ok {
-    return empty_response(OK)
-  } else {
-    return empty_response(UNAUTHORIZED)
-  }
+}
 
+fn handle_login(credentials: &str, connection: &Connection) -> String {
+    let ok = check_credentials(credentials, connection);
+
+     if ok {
+        return empty_response(OK);
+    } else {
+        return empty_response(UNAUTHORIZED)
+    }
 }
 
 
@@ -163,8 +190,13 @@ fn list_users(db_connection: &Connection) -> String {
     return body_response(OK, serde_json::to_string(&users).unwrap().as_str())
 }
 
+fn echo_body(body: String) -> String {
+    return body_response(OK, &body)
+}
+
 fn handle_connection(mut stream: TcpStream, connection: &Connection) {
     let mut buf_reader = BufReader::new(&stream);
+    let mut content_length = 0;
      // Read headers
     let mut http_request: Vec<String> = Vec::new();
     loop {
@@ -174,6 +206,18 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
         if line == "\r\n" || line == "\n" {
             break;  // Blank line marks end of headers
         }
+
+        // Extract Content-Length if present
+        if line.starts_with("Content-Length:") {
+            content_length = line
+                .split(':')
+                .nth(1)
+                .unwrap()
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0);
+        }
+
         http_request.push(line.trim().to_string());
     }
     
@@ -197,12 +241,17 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
         if auth_scheme == "Basic" {
             auth_credentials = String::from_utf8(BASE64_STANDARD.decode(auth_parts[1].to_string()).unwrap()).unwrap() ;
         }
-
-
-        
     }
 
     if auth_credentials == String::new() {
+        let response = empty_response(UNAUTHORIZED);
+        stream.write_all(response.as_bytes()).unwrap();
+        return;
+    }
+
+    let credentials_ok = check_credentials(&auth_credentials.as_str(), connection);
+
+    if !credentials_ok {
         let response = empty_response(UNAUTHORIZED);
         stream.write_all(response.as_bytes()).unwrap();
         return;
@@ -218,11 +267,13 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
     let request_method = first_line_parts[0];
     let request_path = first_line_parts[1];
     let request_http_version = first_line_parts[2];
-
       
     let mut request_body = String::new();
     if request_method == "POST" {
-        buf_reader.read_line(&mut request_body).unwrap();
+       buf_reader
+            .take(content_length as u64)
+            .read_to_string(&mut request_body)
+            .unwrap();
     }
 
     if request_http_version != "HTTP/1.1" {
@@ -237,13 +288,15 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
             "/list" => list_users(connection),
             "/login" => handle_login(auth_credentials.as_str(), connection),
             "/sleep" => {
+                // just to prove the multithreading works
                 thread::sleep(Duration::from_secs(5));
                 empty_response(OK)
             }
             _ => empty_response(NOT_IMPLEMENTED)
         },
         "POST" => match request_path {
-            "/dump" => handle_login(auth_credentials.as_str(), connection),
+            // just to prove the body extraction works
+            "/dump" => echo_body(request_body),
             _ => empty_response(NOT_IMPLEMENTED)
         }
         _ => empty_response(NOT_IMPLEMENTED)
