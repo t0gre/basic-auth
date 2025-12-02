@@ -16,13 +16,28 @@ use::basic_auth::ThreadPool;
 use sqlite::Connection;
 
 enum Role {
-    
-    
+    ADMIN,
+    USER
+}
+
+fn serialize_role(role: Role) -> String {
+    return match role {
+        Role::ADMIN => "ADMIN".to_string(),
+        Role::USER => "USER".to_string()
+    };
+}
+
+fn parse_role(value: String) -> Option<Role> {
+    return match value.as_str() {
+        "ADMIN" => Some(Role::ADMIN),
+        "USER" => Some(Role::USER),
+        _ => None
+    }
 }
 struct User {
     userid: String,
     password: String,
-    role: String  // must be "ADMIN" or ""
+    role: Role
 }
 
 const NOT_IMPLEMENTED: &str = "HTTP/1.1 501 Not Implemented";
@@ -33,7 +48,7 @@ const BAD_REQUEST: &str = "HTTP/1.1 400 Bad Request";
 fn upsert_user(user: User, connection: &Connection, argon2: &Argon2) {
      let userid = user.userid;
      let password = user.password;
-     let role = user.role;
+     let role = serialize_role(user.role);
 
      let salt = SaltString::generate(&mut OsRng);
 
@@ -108,7 +123,7 @@ fn check_credentials(credentials: &str, connection: &Connection, argon2: &Argon2
   let user = User { 
     userid, 
     password, 
-    role: String::new()  // not used
+    role: Role::USER  // not used
 };
 
   if check_password(&user, connection, argon2) {
@@ -137,7 +152,7 @@ fn main() {
     let admin_user = User {
         userid: admin_user,
         password: admin_password,
-        role: "ADMIN".to_string()
+        role: Role::ADMIN
     };
     
     let connection = sqlite::open("auth.db").unwrap();
@@ -221,19 +236,38 @@ fn handle_user_reset(user: User, body: String, connection: &Connection, argon2: 
     upsert_user(user, &connection, argon2);
     return empty_response(OK)
 }
+
 fn handle_user_upsert(body: String, connection: &Connection, argon2: &Argon2) -> String {
  
  let body_parts = body.split(":").collect::<Vec<&str>>();
 
  let userid = body_parts[0].to_string();
  let password = body_parts[1].to_string();
- let role = body_parts[2].to_string();
+
+ let number_of_parts = body_parts.len();
+ if number_of_parts < 2 || number_of_parts > 3 {
+    return empty_response(BAD_REQUEST)
+ }
+
+ let mut role = Role::USER;
+
+
+ if number_of_parts == 3 {
+    match parse_role(body_parts[2].to_string()) {
+        Some(provided_role) => {
+            role = provided_role
+        },
+        None => { 
+            // pass 
+            }
+ }
+}
 
  let user = User {
-    userid,
-    password,
-    role
- };
+                userid,
+                password,
+                role
+            };
 
  upsert_user(user, &connection, argon2);
  return empty_response(OK)
@@ -341,19 +375,17 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection, argon2: &Ar
 
             let response = match request_method {
                 "GET" => match request_path {
-                    "/" => empty_response(OK),
+                    "/" => empty_response(OK), 
                     "/list" => if is_admin { list_users(connection)} else {empty_response(UNAUTHORIZED)},
                     "/login" => handle_login(auth_credentials.as_str(), connection, argon2),
-                    "/sleep" => if is_admin {
-                        // just to prove the multithreading works
+                    "/sleep" => if is_admin { // just to prove the multithreading works
                         thread::sleep(Duration::from_secs(5));
                         empty_response(OK)
                     } else {empty_response(UNAUTHORIZED)}
                     _ => empty_response(NOT_IMPLEMENTED)
                 },
                 "POST" => match request_path {
-                    // just to prove the body extraction works
-                    "/dump" => echo_body(body),
+                    "/dump" => echo_body(body), // just to prove the body extraction works
                     "/reset" => handle_user_reset(user, body, connection, argon2),
                     "/upsert" => if is_admin { handle_user_upsert(body, connection, argon2) } else {empty_response(UNAUTHORIZED)},
                     "/delete" => if is_admin { handle_user_delete(body, connection) } else {empty_response(UNAUTHORIZED)},

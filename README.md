@@ -12,24 +12,32 @@ Features
  - [x] threadpooling for requests
  - [x] login endpoint
  - [x] store passwords in db, encrypted
- - [ ] orgs, roles etc
-   -  [ ] check requester role
-   -  [ ] check requester org
- - [ ] add/remove users
- - [ ] reset password
+ - [x] roles
+   -  [x] check requester role
+ - [x] add/remove users if admin
+ - [x] reset password
+   - as user (with old password)
+   - as admin (old user password not required) 
 
 
 # How the api works
 
 ### admin add/reset:
-
 check requestor is admin
 assume original password is lost
 upsert any user with the data provided (needs username, password, role)
 
+example bodies
+- 'bob:his_new_password'
+- 'bob:his_new_password:ADMIN'
+
+
 ### user reset
 use the password in body as new password
 only for this user (only change password, not role)
+
+example body 
+- 'new_password' 
 
 ### admin delete:
 
