@@ -1,6 +1,6 @@
 # Basic Auth
 
-As Tony Hoard said; "There are two ways to build a system: You can either make it so simple there are obviously no flaws or you can make it so complex there are no obvious flaws".
+As Tony Hoare said; "There are two ways to build a system: You can either make it so simple there are obviously no flaws or you can make it so complex there are no obvious flaws".
 
 Thesis: Auth has become way too complicated. Complexity is a risk in itself.
 
