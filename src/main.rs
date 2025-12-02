@@ -15,19 +15,25 @@ use argon2::{
 use::basic_auth::ThreadPool;
 use sqlite::Connection;
 
+enum Role {
+    
+    
+}
 struct User {
     userid: String,
-    password: String
+    password: String,
+    role: String  // must be "ADMIN" or ""
 }
 
 const NOT_IMPLEMENTED: &str = "HTTP/1.1 501 Not Implemented";
 const OK: &str = "HTTP/1.1 200 OK";
 const UNAUTHORIZED: &str = "HTTP/1.1 401 Unauthorized";
-
+const BAD_REQUEST: &str = "HTTP/1.1 400 Bad Request";
 
 fn upsert_user(user: User, connection: &Connection, argon2: &Argon2) {
      let userid = user.userid;
      let password = user.password;
+     let role = user.role;
 
      let salt = SaltString::generate(&mut OsRng);
 
@@ -36,16 +42,16 @@ fn upsert_user(user: User, connection: &Connection, argon2: &Argon2) {
         .to_string();
 
      let query = format!("
-        INSERT INTO users(userid) VALUES('{userid}')
-            ON CONFLICT(userid) DO UPDATE SET password='{password_hash}';
+        INSERT INTO users(userid, password, role) VALUES('{userid}','{password_hash}','{role}')
+            ON CONFLICT(userid) DO UPDATE SET password='{password_hash}', role='{role}' ;
         ");
 
     connection.execute(query).unwrap();
 }
 
-fn check_password(user: User, connection: &Connection, argon2: &Argon2) -> bool {
-     let userid = user.userid;
-     let password = user.password;
+fn check_password(user: &User, connection: &Connection, argon2: &Argon2) -> bool {
+     let userid = &user.userid;
+     let password = &user.password;
 
 
      let query = format!("
@@ -69,9 +75,9 @@ fn check_password(user: User, connection: &Connection, argon2: &Argon2) -> bool 
     argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok()
 }
 
-fn is_admin(user: User, connection: &Connection) -> bool {
+fn is_admin(user: &User, connection: &Connection) -> bool {
 
-    let userid = user.userid;
+    let userid = &user.userid;
 
     let query = format!("
         SELECT role FROM users WHERE userid='{userid}'"
@@ -81,7 +87,7 @@ fn is_admin(user: User, connection: &Connection) -> bool {
 
     connection.iterate(query, |row| {
         for &(column, val) in row.iter() {
-            if column == "role" && val.unwrap().to_string() == "admin" {
+            if column == "role" && val.unwrap().to_string() == "ADMIN" {
                     is_admin = true;
             }
         }
@@ -92,24 +98,32 @@ fn is_admin(user: User, connection: &Connection) -> bool {
     return is_admin;
 }
 
-fn check_credentials(credentials: &str, connection: &Connection, argon2: &Argon2) -> bool {
+fn check_credentials(credentials: &str, connection: &Connection, argon2: &Argon2) -> Option<User> {
   
   let parts = credentials.split(":").collect::<Vec<&str>>();
 
   let userid = parts[0].to_string();
   let password = parts[1].to_string();
 
-  return check_password(User { userid, password}, connection, argon2);
+  let user = User { 
+    userid, 
+    password, 
+    role: String::new()  // not used
+};
+
+  if check_password(&user, connection, argon2) {
+    return Some(user)
+  }
+  return None
 
 }
 
 fn handle_login(credentials: &str, connection: &Connection, argon2: &Argon2) -> String {
-    let ok = check_credentials(credentials, connection, argon2);
+    let user = check_credentials(credentials, connection, argon2);
 
-     if ok {
-        return empty_response(OK);
-    } else {
-        return empty_response(UNAUTHORIZED)
+    match user {
+        Some(_) =>  return empty_response(OK),
+        None => return empty_response(UNAUTHORIZED)
     }
 }
 
@@ -123,13 +137,14 @@ fn main() {
     let admin_user = User {
         userid: admin_user,
         password: admin_password,
+        role: "ADMIN".to_string()
     };
     
     let connection = sqlite::open("auth.db").unwrap();
 
 
     let query = format!("
-        CREATE TABLE IF NOT EXISTS users (userid TEXT PRIMARY KEY, password TEXT);
+        CREATE TABLE IF NOT EXISTS users (userid TEXT PRIMARY KEY, password TEXT, role TEXT);
         ");
 
     connection.execute(query).unwrap();
@@ -194,6 +209,49 @@ fn echo_body(body: String) -> String {
     return body_response(OK, &body)
 }
 
+fn handle_user_reset(user: User, body: String, connection: &Connection, argon2: &Argon2) -> String {
+    let new_password = body;
+
+     let user = User {
+        userid: user.userid,
+        password: new_password,
+        role: user.role
+    };
+
+    upsert_user(user, &connection, argon2);
+    return empty_response(OK)
+}
+fn handle_user_upsert(body: String, connection: &Connection, argon2: &Argon2) -> String {
+ 
+ let body_parts = body.split(":").collect::<Vec<&str>>();
+
+ let userid = body_parts[0].to_string();
+ let password = body_parts[1].to_string();
+ let role = body_parts[2].to_string();
+
+ let user = User {
+    userid,
+    password,
+    role
+ };
+
+ upsert_user(user, &connection, argon2);
+ return empty_response(OK)
+
+}
+
+fn handle_user_delete(body: String, connection: &Connection) -> String {
+    let userid = body;
+    let delete = format!("DELETE FROM users WHERE userid='{userid}'");
+
+    if connection.execute(delete).is_ok() {
+         return empty_response(OK)
+    };
+
+    return body_response(BAD_REQUEST, format!("user not found: {userid}").as_str())
+
+}
+
 fn handle_connection(mut stream: TcpStream, connection: &Connection, argon2: &Argon2) {
     let mut buf_reader = BufReader::new(&stream);
     let mut content_length = 0;
@@ -249,60 +307,71 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection, argon2: &Ar
         return;
     }
 
-    let credentials_ok = check_credentials(&auth_credentials.as_str(), connection, argon2);
+    let credential_check = check_credentials(&auth_credentials.as_str(), connection, argon2);
 
-    if !credentials_ok {
-        let response = empty_response(UNAUTHORIZED);
-        stream.write_all(response.as_bytes()).unwrap();
-        return;
-    }
-
-    let request_first_line = &http_request[0];
+    match credential_check {
+        Some(user) => {
+            
+            let request_first_line = &http_request[0];
   
     
-    let first_line_parts = request_first_line
-        .split_whitespace()
-        .collect::<Vec<&str>>();
+            let first_line_parts = request_first_line
+                .split_whitespace()
+                .collect::<Vec<&str>>();
 
-    let request_method = first_line_parts[0];
-    let request_path = first_line_parts[1];
-    let request_http_version = first_line_parts[2];
-      
-    let mut request_body = String::new();
-    if request_method == "POST" {
-       buf_reader
-            .take(content_length as u64)
-            .read_to_string(&mut request_body)
-            .unwrap();
+            let request_method = first_line_parts[0];
+            let request_path = first_line_parts[1];
+            let request_http_version = first_line_parts[2];
+            
+            let mut body = String::new();
+            if request_method == "POST" {
+            buf_reader
+                    .take(content_length as u64)
+                    .read_to_string(&mut body)
+                    .unwrap();
+            }
+
+            if request_http_version != "HTTP/1.1" {
+                let response = empty_response(NOT_IMPLEMENTED);
+                stream.write_all(response.as_bytes()).unwrap();
+                return;
+            } 
+
+            let is_admin = is_admin(&user, connection);
+
+            let response = match request_method {
+                "GET" => match request_path {
+                    "/" => empty_response(OK),
+                    "/list" => if is_admin { list_users(connection)} else {empty_response(UNAUTHORIZED)},
+                    "/login" => handle_login(auth_credentials.as_str(), connection, argon2),
+                    "/sleep" => if is_admin {
+                        // just to prove the multithreading works
+                        thread::sleep(Duration::from_secs(5));
+                        empty_response(OK)
+                    } else {empty_response(UNAUTHORIZED)}
+                    _ => empty_response(NOT_IMPLEMENTED)
+                },
+                "POST" => match request_path {
+                    // just to prove the body extraction works
+                    "/dump" => echo_body(body),
+                    "/reset" => handle_user_reset(user, body, connection, argon2),
+                    "/upsert" => if is_admin { handle_user_upsert(body, connection, argon2) } else {empty_response(UNAUTHORIZED)},
+                    "/delete" => if is_admin { handle_user_delete(body, connection) } else {empty_response(UNAUTHORIZED)},
+                    _ => empty_response(NOT_IMPLEMENTED)
+                }
+                _ => empty_response(NOT_IMPLEMENTED)
+            };
+
+            stream.write_all(response.as_bytes()).unwrap();
+
+        },
+        None => {
+            let response = empty_response(UNAUTHORIZED);
+            stream.write_all(response.as_bytes()).unwrap();
+            return;
+        }
     }
 
-    if request_http_version != "HTTP/1.1" {
-        let response = empty_response(NOT_IMPLEMENTED);
-        stream.write_all(response.as_bytes()).unwrap();
-        return;
-    } 
-
-    let response = match request_method {
-        "GET" => match request_path {
-            "/" => empty_response(OK),
-            "/list" => list_users(connection),
-            "/login" => handle_login(auth_credentials.as_str(), connection, argon2),
-            "/sleep" => {
-                // just to prove the multithreading works
-                thread::sleep(Duration::from_secs(5));
-                empty_response(OK)
-            }
-            _ => empty_response(NOT_IMPLEMENTED)
-        },
-        "POST" => match request_path {
-            // just to prove the body extraction works
-            "/dump" => echo_body(request_body),
-            _ => empty_response(NOT_IMPLEMENTED)
-        }
-        _ => empty_response(NOT_IMPLEMENTED)
-    };
-
-    stream.write_all(response.as_bytes()).unwrap();
-
+    
     
 }
