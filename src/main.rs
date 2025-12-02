@@ -1,7 +1,5 @@
 use std::{
-    env,
-    io::{BufReader, prelude::*},
-    net::{TcpListener, TcpStream}, thread, time::Duration,
+    env, io::{BufReader, prelude::*}, net::{TcpListener, TcpStream}, sync::Arc, thread, time::Duration
 };
 
 use base64::prelude::*;
@@ -27,12 +25,11 @@ const OK: &str = "HTTP/1.1 200 OK";
 const UNAUTHORIZED: &str = "HTTP/1.1 401 Unauthorized";
 
 
-fn upsert_user(user: User, connection: &Connection) {
+fn upsert_user(user: User, connection: &Connection, argon2: &Argon2) {
      let userid = user.userid;
      let password = user.password;
 
      let salt = SaltString::generate(&mut OsRng);
-     let argon2 = Argon2::default();
 
      let password_hash = argon2.hash_password(password.as_bytes(), &salt)
         .unwrap()
@@ -46,7 +43,7 @@ fn upsert_user(user: User, connection: &Connection) {
     connection.execute(query).unwrap();
 }
 
-fn check_password(user: User, connection: &Connection) -> bool {
+fn check_password(user: User, connection: &Connection, argon2: &Argon2) -> bool {
      let userid = user.userid;
      let password = user.password;
 
@@ -69,7 +66,7 @@ fn check_password(user: User, connection: &Connection) -> bool {
     ).unwrap();
 
     let parsed_hash = PasswordHash::new(&stored_password_hash).unwrap();
-    Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok()
+    argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok()
 }
 
 fn is_admin(user: User, connection: &Connection) -> bool {
@@ -95,19 +92,19 @@ fn is_admin(user: User, connection: &Connection) -> bool {
     return is_admin;
 }
 
-fn check_credentials(credentials: &str, connection: &Connection) -> bool {
+fn check_credentials(credentials: &str, connection: &Connection, argon2: &Argon2) -> bool {
   
   let parts = credentials.split(":").collect::<Vec<&str>>();
 
   let userid = parts[0].to_string();
   let password = parts[1].to_string();
 
-  return check_password(User { userid, password}, connection);
+  return check_password(User { userid, password}, connection, argon2);
 
 }
 
-fn handle_login(credentials: &str, connection: &Connection) -> String {
-    let ok = check_credentials(credentials, connection);
+fn handle_login(credentials: &str, connection: &Connection, argon2: &Argon2) -> String {
+    let ok = check_credentials(credentials, connection, argon2);
 
      if ok {
         return empty_response(OK);
@@ -120,7 +117,8 @@ fn handle_login(credentials: &str, connection: &Connection) -> String {
 fn main() {
 
     let admin_user = env::var("ADMIN_USER").unwrap();
-    let admin_password = env::var("ADMIN_PASSWORD").unwrap();    
+    let admin_password = env::var("ADMIN_PASSWORD").unwrap();  
+    let argon2 = Arc::new(Argon2::default());
 
     let admin_user = User {
         userid: admin_user,
@@ -136,7 +134,7 @@ fn main() {
 
     connection.execute(query).unwrap();
 
-    upsert_user(admin_user, &connection);
+    upsert_user(admin_user, &connection, &*argon2);
 
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let pool = ThreadPool::new(4);
@@ -144,8 +142,10 @@ fn main() {
     for stream in listener.incoming() {
         let stream = stream.unwrap();
 
-         pool.execute(|db_connection: &Connection| {
-            handle_connection(stream, db_connection);
+        let argon2clone = Arc::clone(&argon2);
+
+        pool.execute(move |db_connection: &Connection| {
+            handle_connection(stream, db_connection, &*argon2clone);
         });
     }
 }
@@ -194,7 +194,7 @@ fn echo_body(body: String) -> String {
     return body_response(OK, &body)
 }
 
-fn handle_connection(mut stream: TcpStream, connection: &Connection) {
+fn handle_connection(mut stream: TcpStream, connection: &Connection, argon2: &Argon2) {
     let mut buf_reader = BufReader::new(&stream);
     let mut content_length = 0;
      // Read headers
@@ -249,7 +249,7 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
         return;
     }
 
-    let credentials_ok = check_credentials(&auth_credentials.as_str(), connection);
+    let credentials_ok = check_credentials(&auth_credentials.as_str(), connection, argon2);
 
     if !credentials_ok {
         let response = empty_response(UNAUTHORIZED);
@@ -286,7 +286,7 @@ fn handle_connection(mut stream: TcpStream, connection: &Connection) {
         "GET" => match request_path {
             "/" => empty_response(OK),
             "/list" => list_users(connection),
-            "/login" => handle_login(auth_credentials.as_str(), connection),
+            "/login" => handle_login(auth_credentials.as_str(), connection, argon2),
             "/sleep" => {
                 // just to prove the multithreading works
                 thread::sleep(Duration::from_secs(5));
